@@ -1,0 +1,10 @@
+
+{
+  "name": "SecureGuard - Painel de Segurança",
+  "description": "Um aplicativo de segurança para gravar evidências como vídeo, áudio e localização em situações de emergência. Inclui um botão de pânico, modo de visualização ao vivo e gerenciamento de evidências gravadas com um sistema de pagamento simulado para downloads.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ]
+}
