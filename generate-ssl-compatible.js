@@ -1,28 +1,52 @@
 import { execSync } from 'child_process';
 import fs from 'fs';
-import path from 'path';
 
 console.log('🔐 Gerando certificados SSL compatíveis...');
 
+// Função para encontrar o OpenSSL no Windows
+function findOpenSSL() {
+  const commonPaths = [
+    'openssl', // Se estiver no PATH
+    'C:\\Program Files\\OpenSSL-Win64\\bin\\openssl.exe',
+    'C:\\Program Files\\OpenSSL-Win32\\bin\\openssl.exe',
+    'C:\\OpenSSL-Win64\\bin\\openssl.exe',
+    'C:\\OpenSSL-Win32\\bin\\openssl.exe',
+  ];
+
+  for (const opensslPath of commonPaths) {
+    try {
+      execSync(`"${opensslPath}" version`, { stdio: 'ignore' });
+      return opensslPath;
+    } catch (error) {
+      continue;
+    }
+  }
+  return null;
+}
+
 try {
   // Verificar se OpenSSL está disponível
-  try {
-    execSync('openssl version', { stdio: 'ignore' });
-  } catch (error) {
-    console.log('❌ OpenSSL não encontrado. Usando certificados autoassinados do Vite...');
-    process.exit(0);
+  const opensslPath = findOpenSSL();
+  if (!opensslPath) {
+    console.log('❌ OpenSSL não encontrado.');
+    console.log('💡 Instale o OpenSSL ou adicione ao PATH:');
+    console.log('   https://slproweb.com/products/Win32OpenSSL.html');
+    process.exit(1);
   }
+  
+  console.log(`✅ OpenSSL encontrado: ${opensslPath}`);
 
   // Gerar chave privada
   console.log('📝 Gerando chave privada...');
-  execSync('openssl genrsa -out localhost-key.pem 2048', { stdio: 'inherit' });
+  execSync(`"${opensslPath}" genrsa -out localhost-key.pem 2048`, { stdio: 'inherit' });
 
-  // Criar arquivo de configuração
+  // Criar arquivo de configuração com extensões corretas para Chrome
   const configContent = `
 [req]
 distinguished_name = req_distinguished_name
 req_extensions = v3_req
 prompt = no
+x509_extensions = v3_req
 
 [req_distinguished_name]
 C = BR
@@ -33,23 +57,26 @@ OU = Development
 CN = localhost
 
 [v3_req]
-keyUsage = keyEncipherment, dataEncipherment
-extendedKeyUsage = serverAuth
+basicConstraints = CA:FALSE
+keyUsage = nonRepudiation, digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth, clientAuth
 subjectAltName = @alt_names
+authorityKeyIdentifier = keyid,issuer
 
 [alt_names]
 DNS.1 = localhost
 DNS.2 = *.localhost
 DNS.3 = 192.168.18.94
 IP.1 = 127.0.0.1
-IP.2 = 192.168.18.94
+IP.2 = ::1
+IP.3 = 192.168.18.94
 `;
 
   fs.writeFileSync('localhost.conf', configContent);
 
-  // Gerar certificado
+  // Gerar certificado com extensões corretas
   console.log('📜 Gerando certificado...');
-  execSync('openssl req -new -x509 -key localhost-key.pem -out localhost.pem -days 365 -config localhost.conf -extensions v3_req', { stdio: 'inherit' });
+  execSync(`"${opensslPath}" req -new -x509 -key localhost-key.pem -out localhost.pem -days 365 -config localhost.conf -extensions v3_req -sha256`, { stdio: 'inherit' });
 
   // Limpar arquivo de configuração
   fs.unlinkSync('localhost.conf');

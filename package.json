@@ -10,6 +10,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "generate-icons": "node generate-pwa-icons.js",
+    "generate-ssl": "node generate-ssl-compatible.js",
+    "dev:https": "npm run generate-ssl && npm run dev",
     "pwa:audit": "lighthouse https://192.168.18.94:8080 --view --only-categories=pwa"
   },
   "dependencies": {

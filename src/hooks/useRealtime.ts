@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/integrations/supabase';
-import { Device, Recording } from '@/hooks/useDevices';
+import { Device } from '@/hooks/useDevices';
+import { Recording } from '@/hooks/useRecordings';
 
 export interface RealtimeUpdate {
   type: 'device_status' | 'recording_start' | 'recording_stop' | 'panic_alert';

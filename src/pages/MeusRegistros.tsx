@@ -20,7 +20,8 @@ import {
   SkipBack,
   SkipForward,
   Lock,
-  ArrowLeft
+  ArrowLeft,
+  RefreshCw
 } from "lucide-react";
 import { useRecordings, Recording } from "@/hooks/useRecordings";
 import { useDevices } from "@/hooks/useDevices";
@@ -51,6 +52,12 @@ export default function MeusRegistros() {
   const { data: recordings = [], isLoading: recordingsLoading } = useQuery({
     queryKey: ['recordings'],
     queryFn: getRecordings,
+    onSuccess: (data) => {
+      console.log('📋 Gravações carregadas em MeusRegistros:', data);
+    },
+    onError: (error) => {
+      console.error('❌ Erro ao carregar gravações:', error);
+    }
   });
 
   // Fetch devices for context
@@ -106,6 +113,17 @@ export default function MeusRegistros() {
 
         console.log('🔍 Tentando baixar arquivo:', recording.file_path);
         
+        // Para gravações de localização, mostrar dados diretamente
+        if (recording.type === 'location' && recording.location_data) {
+          console.log('📍 Exibindo dados de localização:', recording.location_data);
+          if ((window as any).showNotification) {
+            (window as any).showNotification('success', `Dados de localização carregados! ${recording.location_data.total_points || 0} pontos coletados.`);
+          }
+          setCurrentPlaying(null);
+          setIsPlaying(false);
+          return;
+        }
+        
         // Primeiro, verificar se o arquivo existe no storage
         const { data: listData, error: listError } = await supabase.storage
           .from('recordings')
@@ -132,26 +150,26 @@ export default function MeusRegistros() {
           return;
         }
         
-        // Baixar arquivo do Supabase Storage
-        const { data, error } = await supabase.storage
+        // Gerar URL assinada do Supabase Storage (backend) para reprodução
+        const { data: urlData, error: urlError } = await supabase.storage
           .from('recordings')
-          .download(recording.file_path);
+          .createSignedUrl(recording.file_path, 3600); // URL válida por 1 hora
 
-        if (error) {
-          console.error('❌ Erro ao baixar arquivo:', error);
+        if (urlError || !urlData) {
+          console.error('❌ Erro ao gerar URL assinada:', urlError);
           
           // Tratar diferentes tipos de erro
-          if (error.message?.includes('not found') || error.message?.includes('404') || error.message?.includes('Object not found')) {
+          if (urlError?.message?.includes('not found') || urlError?.message?.includes('404') || urlError?.message?.includes('Object not found')) {
             if ((window as any).showNotification) {
               (window as any).showNotification('warning', 'Arquivo não encontrado no servidor. Esta gravação pode ter sido feita antes da atualização do sistema.');
             }
-          } else if (error.message?.includes('StorageUnknownError')) {
+          } else if (urlError?.message?.includes('StorageUnknownError')) {
             if ((window as any).showNotification) {
               (window as any).showNotification('error', 'Erro de conexão com o servidor de arquivos. Tente novamente em alguns instantes.');
             }
           } else {
             if ((window as any).showNotification) {
-              (window as any).showNotification('error', `Erro ao acessar arquivo: ${error.message}`);
+              (window as any).showNotification('error', `Erro ao acessar arquivo: ${urlError?.message || 'Erro desconhecido'}`);
             }
           }
           
@@ -160,40 +178,33 @@ export default function MeusRegistros() {
           return;
         }
 
-        if (!data) {
-          console.error('❌ Arquivo não encontrado no Storage');
-          if ((window as any).showNotification) {
-            (window as any).showNotification('error', 'Arquivo não encontrado no servidor');
-          }
-          setCurrentPlaying(null);
-          setIsPlaying(false);
-          return;
-        }
-
-        console.log('✅ Arquivo baixado com sucesso:', data.size, 'bytes');
-
-        // Criar URL para reprodução
-        const url = URL.createObjectURL(data);
-        console.log('🔗 URL criada para reprodução:', url);
+        const url = urlData.signedUrl;
+        console.log('✅ URL assinada gerada com sucesso:', url);
         
         // Limpar URLs anteriores para evitar vazamentos de memória
-        if (audioRef.current?.src) {
+        if (audioRef.current?.src && audioRef.current.src.startsWith('blob:')) {
           URL.revokeObjectURL(audioRef.current.src);
         }
-        if (videoRef.current?.src) {
+        if (videoRef.current?.src && videoRef.current.src.startsWith('blob:')) {
           URL.revokeObjectURL(videoRef.current.src);
         }
         
         if (recording.type === 'video' || recording.type === 'panic') {
           if (videoRef.current) {
             videoRef.current.src = url;
+            videoRef.current.crossOrigin = 'anonymous';
             videoRef.current.load();
             
             // Aguardar o metadata carregar antes de reproduzir
             videoRef.current.addEventListener('loadedmetadata', () => {
               setDuration(videoRef.current?.duration || 0);
-              videoRef.current?.play();
-            });
+              videoRef.current?.play().catch(err => {
+                console.error('Erro ao reproduzir vídeo:', err);
+                if ((window as any).showNotification) {
+                  (window as any).showNotification('error', 'Erro ao reproduzir vídeo');
+                }
+              });
+            }, { once: true });
             
             // Atualizar tempo atual durante reprodução
             videoRef.current.addEventListener('timeupdate', () => {
@@ -203,13 +214,19 @@ export default function MeusRegistros() {
         } else if (recording.type === 'audio') {
           if (audioRef.current) {
             audioRef.current.src = url;
+            audioRef.current.crossOrigin = 'anonymous';
             audioRef.current.load();
             
             // Aguardar o metadata carregar antes de reproduzir
             audioRef.current.addEventListener('loadedmetadata', () => {
               setDuration(audioRef.current?.duration || 0);
-              audioRef.current?.play();
-            });
+              audioRef.current?.play().catch(err => {
+                console.error('Erro ao reproduzir áudio:', err);
+                if ((window as any).showNotification) {
+                  (window as any).showNotification('error', 'Erro ao reproduzir áudio');
+                }
+              });
+            }, { once: true });
             
             // Atualizar tempo atual durante reprodução
             audioRef.current.addEventListener('timeupdate', () => {
@@ -272,64 +289,79 @@ export default function MeusRegistros() {
         return;
       }
 
-      // Baixar arquivo do Supabase Storage
-      const { data, error } = await supabase.storage
+      // Gerar URL assinada do Supabase Storage (backend) para download
+      const { data: urlData, error: urlError } = await supabase.storage
         .from('recordings')
-        .download(recording.file_path);
+        .createSignedUrl(recording.file_path, 3600); // URL válida por 1 hora
 
-      if (error) {
-        console.error('❌ Erro ao baixar arquivo:', error);
+      if (urlError || !urlData) {
+        console.error('❌ Erro ao gerar URL assinada:', urlError);
         
         // Tratar diferentes tipos de erro
-        if (error.message?.includes('not found') || error.message?.includes('404') || error.message?.includes('Object not found')) {
+        if (urlError?.message?.includes('not found') || urlError?.message?.includes('404') || urlError?.message?.includes('Object not found')) {
           if ((window as any).showNotification) {
             (window as any).showNotification('warning', 'Arquivo não encontrado no servidor. Esta gravação pode ter sido feita antes da atualização do sistema.');
           }
-        } else if (error.message?.includes('StorageUnknownError')) {
+        } else if (urlError?.message?.includes('StorageUnknownError')) {
           if ((window as any).showNotification) {
             (window as any).showNotification('error', 'Erro de conexão com o servidor de arquivos. Tente novamente em alguns instantes.');
           }
         } else {
           if ((window as any).showNotification) {
-            (window as any).showNotification('error', `Erro ao baixar arquivo: ${error.message}`);
+            (window as any).showNotification('error', `Erro ao baixar arquivo: ${urlError?.message || 'Erro desconhecido'}`);
           }
         }
         return;
       }
 
-      if (!data) {
-        console.error('❌ Arquivo não encontrado no Storage');
-        if ((window as any).showNotification) {
-          (window as any).showNotification('error', 'Arquivo não encontrado no servidor');
-        }
-        return;
-      }
+      console.log('✅ URL assinada gerada com sucesso para download');
 
-      console.log('✅ Arquivo baixado com sucesso:', data.size, 'bytes');
-
-      // Criar URL para download
-      const url = URL.createObjectURL(data);
-      
       // Criar nome do arquivo mais descritivo
       const date = new Date(recording.created_at);
       const dateStr = date.toLocaleDateString('pt-BR').replace(/\//g, '-');
       const timeStr = date.toLocaleTimeString('pt-BR', { hour12: false }).replace(/:/g, '-');
       const typeLabel = getTypeLabel(recording.type);
-      const downloadFileName = `${typeLabel}_${dateStr}_${timeStr}.webm`;
       
-      // Criar elemento de download
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = downloadFileName;
-      link.style.display = 'none';
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
+      // Determinar extensão baseada no tipo
+      const fileExt = recording.type === 'location' ? 'json' : 
+                     recording.type === 'audio' ? 'webm' : 
+                     recording.type === 'video' || recording.type === 'panic' ? 'webm' : 'webm';
       
-      // Limpar URL após um tempo
-      setTimeout(() => {
-        URL.revokeObjectURL(url);
-      }, 1000);
+      const downloadFileName = `${typeLabel}_${dateStr}_${timeStr}.${fileExt}`;
+      
+      // Baixar arquivo usando fetch com a URL assinada
+      try {
+        const response = await fetch(urlData.signedUrl);
+        if (!response.ok) {
+          throw new Error(`Erro HTTP: ${response.status}`);
+        }
+        
+        const blob = await response.blob();
+        console.log('✅ Arquivo baixado com sucesso:', blob.size, 'bytes');
+        
+        // Criar URL para download
+        const url = URL.createObjectURL(blob);
+        
+        // Criar elemento de download
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = downloadFileName;
+        link.style.display = 'none';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        
+        // Limpar URL após um tempo
+        setTimeout(() => {
+          URL.revokeObjectURL(url);
+        }, 1000);
+      } catch (fetchError) {
+        console.error('❌ Erro ao baixar arquivo:', fetchError);
+        if ((window as any).showNotification) {
+          (window as any).showNotification('error', `Erro ao baixar arquivo: ${fetchError instanceof Error ? fetchError.message : 'Erro desconhecido'}`);
+        }
+        return;
+      }
 
       if ((window as any).showNotification) {
         (window as any).showNotification('success', `Download iniciado: ${getTypeLabel(recording.type)}`);
@@ -353,19 +385,19 @@ export default function MeusRegistros() {
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current.currentTime = 0;
-      if (audioRef.current.src) {
+      if (audioRef.current.src && audioRef.current.src.startsWith('blob:')) {
         URL.revokeObjectURL(audioRef.current.src);
-        audioRef.current.src = '';
       }
+      audioRef.current.src = '';
     }
     
     if (videoRef.current) {
       videoRef.current.pause();
       videoRef.current.currentTime = 0;
-      if (videoRef.current.src) {
+      if (videoRef.current.src && videoRef.current.src.startsWith('blob:')) {
         URL.revokeObjectURL(videoRef.current.src);
-        videoRef.current.src = '';
       }
+      videoRef.current.src = '';
     }
   };
 
@@ -611,6 +643,19 @@ export default function MeusRegistros() {
             <option value="location">Localização</option>
             <option value="panic">Pânico</option>
           </select>
+          
+          {/* Botão de debug temporário */}
+          <Button
+            variant="outline"
+            onClick={() => {
+              console.log('🔄 Forçando atualização da lista de gravações...');
+              queryClient.invalidateQueries({ queryKey: ['recordings'] });
+            }}
+            className="gap-2"
+          >
+            <RefreshCw className="h-4 w-4" />
+            Atualizar
+          </Button>
         </div>
 
         {/* Lista de Registros */}
@@ -633,10 +678,50 @@ export default function MeusRegistros() {
                       <span>{formatFileSize(recording.size)}</span>
                       <span>•</span>
                       <span>{formatDuration(recording.duration)}</span>
+                      {recording.type === 'location' && recording.location_data && (
+                        <>
+                          <span>•</span>
+                          <span>{recording.location_data.total_points || 0} pontos</span>
+                        </>
+                      )}
                     </div>
                     <p className="text-xs text-muted-foreground mt-1">
                       Dispositivo: {getDeviceName(recording.device_id)}
                     </p>
+                    
+                    {/* Exibir dados de localização se disponíveis */}
+                    {recording.type === 'location' && recording.location_data && (
+                      <div className="mt-3 p-3 bg-muted/50 rounded-lg">
+                        <div className="flex items-center gap-2 mb-2">
+                          <MapPin className="h-4 w-4 text-primary" />
+                          <span className="text-sm font-medium">Dados de Localização</span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 text-xs">
+                          <div>
+                            <span className="text-muted-foreground">Pontos:</span>
+                            <span className="ml-1 font-medium">{recording.location_data.total_points || 0}</span>
+                          </div>
+                          <div>
+                            <span className="text-muted-foreground">Duração:</span>
+                            <span className="ml-1 font-medium">{formatDuration(recording.location_data.duration)}</span>
+                          </div>
+                          {recording.location_data.locations && recording.location_data.locations.length > 0 && (
+                            <>
+                              <div className="col-span-2">
+                                <span className="text-muted-foreground">Primeira posição:</span>
+                                <span className="ml-1 font-medium">
+                                  {recording.location_data.locations[0].latitude.toFixed(6)}, {recording.location_data.locations[0].longitude.toFixed(6)}
+                                </span>
+                              </div>
+                              <div className="col-span-2">
+                                <span className="text-muted-foreground">Endereço:</span>
+                                <span className="ml-1 font-medium">{recording.location_data.locations[0].address || 'N/A'}</span>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -646,12 +731,12 @@ export default function MeusRegistros() {
                   <Badge 
                     variant="outline" 
                     className={
-                      recording.file_path 
+                      recording.file_path || (recording.type === 'location' && recording.location_data)
                         ? "bg-success/10 text-success border-success" 
                         : "bg-warning/10 text-warning border-warning"
                     }
                   >
-                    {recording.file_path ? "Disponível" : "Sem arquivo"}
+                    {recording.file_path || (recording.type === 'location' && recording.location_data) ? "Disponível" : "Sem arquivo"}
                   </Badge>
                   
                   {/* Action Buttons */}
@@ -660,9 +745,13 @@ export default function MeusRegistros() {
                       size="sm" 
                       variant={currentPlaying === recording.id ? "default" : "outline"}
                       onClick={() => handlePlay(recording)}
-                      title={recording.file_path ? (currentPlaying === recording.id ? "Pausar" : "Reproduzir") : "Arquivo não disponível"}
+                      title={
+                        recording.file_path || (recording.type === 'location' && recording.location_data) 
+                          ? (currentPlaying === recording.id ? "Pausar" : "Reproduzir") 
+                          : "Arquivo não disponível"
+                      }
                       className="gap-2"
-                      disabled={!recording.file_path}
+                      disabled={!recording.file_path && !(recording.type === 'location' && recording.location_data)}
                     >
                       {currentPlaying === recording.id && isPlaying ? (
                         <>
@@ -750,3 +839,4 @@ export default function MeusRegistros() {
     </div>
   );
 }
+

@@ -1,5 +1,4 @@
 import { useState, useRef, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -21,7 +20,6 @@ interface RecordingState {
 }
 
 export default function Home() {
-  const navigate = useNavigate();
   const [isPanicActive, setIsPanicActive] = useState(false);
   const [activeFeatures, setActiveFeatures] = useState({
     camera: false,
@@ -41,6 +39,11 @@ export default function Home() {
   const [locationAddress, setLocationAddress] = useState<string>('');
   const [recordingDuration, setRecordingDuration] = useState(0);
   const [recordingTimeLimit, setRecordingTimeLimit] = useState(1); // Tempo limite em minutos
+  const [locationHistory, setLocationHistory] = useState<Array<{
+    position: GeolocationPosition;
+    address: string;
+    timestamp: string;
+  }>>([]);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const recordingIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -106,12 +109,14 @@ export default function Home() {
   const createRecordingMutation = useMutation({
     mutationFn: createRecording,
     onSuccess: (recording) => {
+      console.log('✅ Gravação criada com sucesso:', recording);
       queryClient.invalidateQueries({ queryKey: ['recordings'] });
       if ((window as any).showNotification) {
         (window as any).showNotification('success', 'Gravação iniciada com sucesso!');
       }
     },
     onError: (error: any) => {
+      console.error('❌ Erro ao criar gravação:', error);
       if ((window as any).showNotification) {
         (window as any).showNotification('error', error.message || 'Erro ao iniciar gravação');
       }
@@ -152,17 +157,9 @@ export default function Home() {
         startLocationTracking()
       ]);
 
-      // Criar registro no banco
-      const deviceId = devices.length > 0 ? devices[0].id : 'default-device';
-      
-      // Para modo pânico, vamos criar um blob combinado
-      // Por enquanto, vamos salvar sem blob até implementar a combinação
-      createRecordingMutation.mutate({
-        device_id: deviceId,
-        type: 'panic',
-        duration: recordingTimeLimit * 60, // Duração em segundos
-        size: 0, // Será calculado quando o arquivo for criado
-      });
+      // Criar registro no banco será feito quando o vídeo for finalizado
+      // O arquivo será salvo automaticamente pela função startVideoWithAudioRecording
+      console.log('🚨 Modo pânico ativado - gravação de vídeo com áudio iniciada');
       
       if ((window as any).showNotification) {
         (window as any).showNotification('success', `Modo pânico ativado! Gravação por ${recordingTimeLimit} minutos iniciada.`);
@@ -347,13 +344,27 @@ export default function Home() {
         
         // Verificar se o blob tem conteúdo válido
         if (blob.size === 0) {
-          toast.error('Erro: Arquivo de vídeo vazio');
+          if ((window as any).showNotification) {
+            (window as any).showNotification('error', 'Erro: Arquivo de vídeo vazio');
+          }
           return;
         }
         
         // Salvar gravação no banco de dados
+        // Se estiver em modo pânico, salvar como tipo 'panic'
+        const recordingType = isPanicActive ? 'panic' : 'video';
+        
+        console.log('📤 Salvando gravação de vídeo:', {
+          type: recordingType,
+          device_id: devices[0]?.id || 'default',
+          duration: recordingDuration,
+          size: Math.round(blob.size / 1024 / 1024),
+          blobSize: blob.size,
+          isPanicActive
+        });
+        
         createRecordingMutation.mutate({
-          type: 'video',
+          type: recordingType,
           device_id: devices[0]?.id || 'default',
           duration: recordingDuration,
           size: Math.round(blob.size / 1024 / 1024), // MB
@@ -364,7 +375,10 @@ export default function Home() {
         stream.getTracks().forEach(track => track.stop());
         
         if ((window as any).showNotification) {
-          (window as any).showNotification('success', `Vídeo com áudio gravado! Arquivo criado: ${(blob.size / 1024 / 1024).toFixed(2)} MB`);
+          const message = isPanicActive 
+            ? `Modo pânico gravado! Arquivo criado: ${(blob.size / 1024 / 1024).toFixed(2)} MB`
+            : `Vídeo com áudio gravado! Arquivo criado: ${(blob.size / 1024 / 1024).toFixed(2)} MB`;
+          (window as any).showNotification('success', message);
         }
       };
 
@@ -429,12 +443,21 @@ export default function Home() {
         
         // Verificar se o blob tem conteúdo válido
         if (blob.size === 0) {
-          toast.error('Erro: Arquivo de vídeo vazio');
+          if ((window as any).showNotification) {
+            (window as any).showNotification('error', 'Erro: Arquivo de vídeo vazio');
+          }
           return;
         }
         
-        // Salvar gravação para download posterior
         // Salvar gravação no banco de dados
+        console.log('📤 Salvando gravação de vídeo:', {
+          type: 'video',
+          device_id: devices[0]?.id || 'default',
+          duration: recordingDuration,
+          size: Math.round(blob.size / 1024 / 1024),
+          blobSize: blob.size,
+        });
+        
         createRecordingMutation.mutate({
           type: 'video',
           device_id: devices[0]?.id || 'default',
@@ -469,7 +492,9 @@ export default function Home() {
 
       return recorder;
     } catch (error) {
-      toast.error('Erro ao iniciar gravação de vídeo');
+      if ((window as any).showNotification) {
+        (window as any).showNotification('error', 'Erro ao iniciar gravação de vídeo');
+      }
       throw error;
     }
   };
@@ -527,7 +552,9 @@ export default function Home() {
 
       return recorder;
     } catch (error) {
-      toast.error('Erro ao iniciar gravação de áudio');
+      if ((window as any).showNotification) {
+        (window as any).showNotification('error', 'Erro ao iniciar gravação de áudio');
+      }
       throw error;
     }
   };
@@ -535,6 +562,9 @@ export default function Home() {
   // Iniciar monitoramento de localização
   const startLocationTracking = async () => {
     try {
+      // Limpar histórico anterior
+      setLocationHistory([]);
+      
       const watchId = navigator.geolocation.watchPosition(
         async (position) => {
           setLocationData(position);
@@ -546,10 +576,19 @@ export default function Home() {
             position.coords.longitude
           );
           setLocationAddress(address);
+          
+          // Adicionar ao histórico de localização
+          setLocationHistory(prev => [...prev, {
+            position,
+            address,
+            timestamp: new Date().toISOString()
+          }]);
         },
         (error) => {
           console.error('Erro na localização:', error);
-          toast.error('Erro ao obter localização');
+          if ((window as any).showNotification) {
+            (window as any).showNotification('error', 'Erro ao obter localização');
+          }
         },
         { 
           enableHighAccuracy: true,
@@ -567,7 +606,9 @@ export default function Home() {
 
       return watchId;
     } catch (error) {
-      toast.error('Erro ao iniciar monitoramento de localização');
+      if ((window as any).showNotification) {
+        (window as any).showNotification('error', 'Erro ao iniciar monitoramento de localização');
+      }
       throw error;
     }
   };
@@ -608,6 +649,7 @@ export default function Home() {
     });
     setLocationData(null);
     setLocationAddress('');
+    setLocationHistory([]);
   };
 
   // Parar gravação específica
@@ -648,13 +690,66 @@ export default function Home() {
 
     if (type === 'location') {
       setLocationData(null);
-    setLocationAddress('');
+      setLocationAddress('');
+      setLocationHistory([]);
     }
   };
 
   const stopPanicRecording = async () => {
     setIsPanicActive(false);
     setActiveFeatures({ camera: false, audio: false, location: false });
+    
+    // Se há dados de localização coletados, salvar como arquivo JSON
+    if (locationHistory.length > 0) {
+      try {
+        // Criar dados estruturados para o arquivo JSON
+        const locationData = {
+          type: 'panic_location_recording',
+          device_id: devices.length > 0 ? devices[0].id : 'default-device',
+          duration: recordingTimeLimit * 60,
+          start_time: locationHistory[0]?.timestamp,
+          end_time: new Date().toISOString(),
+          total_points: locationHistory.length,
+          locations: locationHistory.map(item => ({
+            timestamp: item.timestamp,
+            latitude: item.position.coords.latitude,
+            longitude: item.position.coords.longitude,
+            accuracy: item.position.coords.accuracy,
+            altitude: item.position.coords.altitude,
+            heading: item.position.coords.heading,
+            speed: item.position.coords.speed,
+            address: item.address
+          }))
+        };
+        
+        // Criar blob JSON
+        const jsonBlob = new Blob([JSON.stringify(locationData, null, 2)], { 
+          type: 'application/json' 
+        });
+        
+        console.log('📤 Salvando dados de localização do pânico:', locationData);
+        
+        // Salvar gravação de localização no banco de dados com o blob JSON
+        createRecordingMutation.mutate({
+          type: 'location',
+          device_id: devices[0]?.id || 'default',
+          duration: recordingTimeLimit * 60,
+          size: Math.round(jsonBlob.size / 1024), // KB
+          blob: jsonBlob, // Passar o blob JSON
+          location_data: locationData // Também salvar os dados estruturados
+        });
+        
+        if ((window as any).showNotification) {
+          (window as any).showNotification('success', `Dados de localização do pânico salvos! ${locationHistory.length} pontos coletados.`);
+        }
+      } catch (error) {
+        console.error('Erro ao salvar dados de localização do pânico:', error);
+        if ((window as any).showNotification) {
+          (window as any).showNotification('error', 'Erro ao salvar dados de localização do pânico');
+        }
+      }
+    }
+    
     stopAllRecordings();
     
     // Limpar timeout e estado persistente
@@ -671,6 +766,58 @@ export default function Home() {
 
   const stopFeatureRecording = async (feature: 'camera' | 'audio' | 'location') => {
     setActiveFeatures(prev => ({ ...prev, [feature]: false }));
+    
+    // Se for gravação de localização, salvar dados como arquivo JSON
+    if (feature === 'location' && locationHistory.length > 0) {
+      try {
+        // Criar dados estruturados para o arquivo JSON
+        const locationData = {
+          type: 'location_recording',
+          device_id: devices.length > 0 ? devices[0].id : 'default-device',
+          duration: recordingTimeLimit * 60,
+          start_time: locationHistory[0]?.timestamp,
+          end_time: new Date().toISOString(),
+          total_points: locationHistory.length,
+          locations: locationHistory.map(item => ({
+            timestamp: item.timestamp,
+            latitude: item.position.coords.latitude,
+            longitude: item.position.coords.longitude,
+            accuracy: item.position.coords.accuracy,
+            altitude: item.position.coords.altitude,
+            heading: item.position.coords.heading,
+            speed: item.position.coords.speed,
+            address: item.address
+          }))
+        };
+        
+        // Criar blob JSON
+        const jsonBlob = new Blob([JSON.stringify(locationData, null, 2)], { 
+          type: 'application/json' 
+        });
+        
+        console.log('📤 Salvando dados de localização:', locationData);
+        
+        // Salvar gravação no banco de dados com o blob JSON
+        createRecordingMutation.mutate({
+          type: 'location',
+          device_id: devices[0]?.id || 'default',
+          duration: recordingTimeLimit * 60,
+          size: Math.round(jsonBlob.size / 1024), // KB
+          blob: jsonBlob, // Passar o blob JSON
+          location_data: locationData // Também salvar os dados estruturados
+        });
+        
+        if ((window as any).showNotification) {
+          (window as any).showNotification('success', `Dados de localização salvos! ${locationHistory.length} pontos coletados.`);
+        }
+      } catch (error) {
+        console.error('Erro ao salvar dados de localização:', error);
+        if ((window as any).showNotification) {
+          (window as any).showNotification('error', 'Erro ao salvar dados de localização');
+        }
+      }
+    }
+    
     stopSpecificRecording(feature);
     
     // Limpar timeout e estado persistente

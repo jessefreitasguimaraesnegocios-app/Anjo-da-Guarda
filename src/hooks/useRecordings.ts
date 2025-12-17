@@ -46,6 +46,8 @@ export const useRecordings = () => {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('Usuário não autenticado');
 
+      console.log('👤 Usuário autenticado:', user.id);
+
       // Gerar nome do arquivo melhorado com timestamp e tipo
       const now = new Date();
       const timestamp = now.toISOString().slice(0, 19).replace(/:/g, '-');
@@ -63,7 +65,46 @@ export const useRecordings = () => {
       const fileName = `${typeLabel}_${dateStr}_${timeStr}.${fileExt}`;
       const filePath = `${user.id}/${fileName}`;
 
-      // Se há um blob, tentar fazer upload para o Supabase Storage (funciona offline)
+      console.log('📁 Caminho do arquivo:', filePath);
+
+      // Preparar dados para inserção no banco
+      const recordingPayload: any = {
+        device_id: recordingData.device_id,
+        user_id: user.id,
+        type: recordingData.type,
+        file_path: filePath,
+        duration: recordingData.duration || 0,
+        size: recordingData.size || 0,
+        is_downloaded: false,
+      };
+
+      // Adicionar location_data se for gravação de localização
+      if (recordingData.type === 'location' && recordingData.location_data) {
+        recordingPayload.location_data = recordingData.location_data;
+      }
+
+      // Primeiro, inserir no banco de dados SEM arquivo
+      let recordingId: string;
+      try {
+        const { data, error } = await supabase
+          .from('recordings')
+          .insert(recordingPayload)
+          .select()
+          .single();
+
+        if (error) {
+          console.error('❌ Erro ao salvar no banco:', error);
+          throw error;
+        }
+        
+        console.log('✅ Gravação salva no banco:', data);
+        recordingId = data.id;
+      } catch (dbError) {
+        console.error('❌ Erro crítico ao salvar no banco:', dbError);
+        throw dbError;
+      }
+
+      // Se há um blob, tentar fazer upload para o Supabase Storage DEPOIS
       if (recordingData.blob) {
         console.log('📤 Tentando upload do arquivo:', filePath, 'Tamanho:', recordingData.blob.size, 'bytes');
         
@@ -72,75 +113,37 @@ export const useRecordings = () => {
             .from('recordings')
             .upload(filePath, recordingData.blob, {
               contentType: recordingData.blob.type,
-              upsert: false
+              upsert: true // Permitir sobrescrever
             });
 
           if (uploadError) {
-            console.warn('⚠️ Erro ao fazer upload (funcionando offline):', uploadError);
-            // Não falhar se offline - continuar sem upload
+            console.error('❌ Erro ao fazer upload:', uploadError);
+            // Não falhar - gravação já foi salva no banco
           } else {
             console.log('✅ Upload concluído com sucesso:', filePath);
           }
         } catch (uploadError) {
-          console.warn('⚠️ Erro de rede no upload (funcionando offline):', uploadError);
-          // Continuar sem upload se offline
+          console.error('❌ Erro de rede no upload:', uploadError);
+          // Não falhar - gravação já foi salva no banco
         }
       } else {
         console.log('⚠️ Nenhum blob fornecido para upload');
       }
 
-      // Tentar inserir no banco de dados (funciona offline com cache)
-      try {
-        const { data, error } = await supabase
-          .from('recordings')
-          .insert({
-            ...recordingData,
-            user_id: user.id,
-            file_path: filePath,
-            duration: recordingData.duration || 0,
-            size: recordingData.size || 0,
-            is_downloaded: false,
-          })
-          .select()
-          .single();
+      // Buscar a gravação criada para retornar
+      const { data: createdRecording, error: fetchError } = await supabase
+        .from('recordings')
+        .select('*')
+        .eq('id', recordingId)
+        .single();
 
-        if (error) {
-          console.warn('⚠️ Erro ao salvar no banco (funcionando offline):', error);
-          // Criar objeto local se offline
-          const localRecording: Recording = {
-            id: `local_${Date.now()}`,
-            device_id: recordingData.device_id,
-            user_id: user.id,
-            type: recordingData.type,
-            file_path: filePath,
-            location_data: recordingData.location_data,
-            size: recordingData.size || 0,
-            created_at: new Date().toISOString(),
-            is_downloaded: false,
-          };
-          console.log('✅ Gravação criada localmente (offline):', localRecording);
-          return localRecording;
-        }
-        
-        console.log('✅ Gravação salva no banco:', data);
-        return data;
-      } catch (dbError) {
-        console.warn('⚠️ Erro de banco (funcionando offline):', dbError);
-        // Criar objeto local se offline
-        const localRecording: Recording = {
-          id: `local_${Date.now()}`,
-          device_id: recordingData.device_id,
-          user_id: user.id,
-          type: recordingData.type,
-          file_path: filePath,
-          location_data: recordingData.location_data,
-          size: recordingData.size || 0,
-          created_at: new Date().toISOString(),
-          is_downloaded: false,
-        };
-        console.log('✅ Gravação criada localmente (offline):', localRecording);
-        return localRecording;
+      if (fetchError) {
+        console.error('❌ Erro ao buscar gravação criada:', fetchError);
+        throw fetchError;
       }
+
+      console.log('✅ Gravação final criada:', createdRecording);
+      return createdRecording;
     } catch (error) {
       console.error('❌ Erro crítico ao criar gravação:', error);
       throw error;
