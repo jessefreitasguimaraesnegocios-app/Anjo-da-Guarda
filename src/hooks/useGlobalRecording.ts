@@ -204,15 +204,18 @@ export const useGlobalRecording = () => {
       };
 
       recorder.onstop = async () => {
+        // Garantir tipo MIME correto para vídeo
         const blob = new Blob(chunks, { type: 'video/webm' });
+        console.log('🎥 Blob de vídeo criado:', blob.size, 'bytes', 'Tipo:', blob.type);
         
-        // Salvar gravação no banco de dados
+        // Salvar gravação no banco de dados com o blob
         if ((window as any).createRecordingMutation) {
           (window as any).createRecordingMutation.mutate({
-            type: globalRecordingState.recordingType,
+            type: globalRecordingState.recordingType || 'video',
             device_id: (window as any).currentDeviceId || 'default',
             duration: globalRecordingState.recordingTimeLimit * 60,
-            size: Math.round(blob.size / 1024 / 1024),
+            size: blob.size, // Tamanho em bytes
+            blob: blob, // Passar o blob para upload
           });
         }
 
@@ -257,15 +260,18 @@ export const useGlobalRecording = () => {
       };
 
       recorder.onstop = async () => {
+        // Garantir tipo MIME correto
         const blob = new Blob(chunks, { type: 'video/webm' });
+        console.log('🎥 Blob de vídeo criado:', blob.size, 'bytes', 'Tipo:', blob.type);
         
-        // Salvar gravação no banco de dados
+        // Salvar gravação no banco de dados com o blob
         if ((window as any).createRecordingMutation) {
           (window as any).createRecordingMutation.mutate({
-            type: globalRecordingState.recordingType,
+            type: globalRecordingState.recordingType || 'video',
             device_id: (window as any).currentDeviceId || 'default',
             duration: globalRecordingState.recordingTimeLimit * 60,
-            size: Math.round(blob.size / 1024 / 1024),
+            size: blob.size, // Tamanho em bytes
+            blob: blob, // Passar o blob para upload
           });
         }
 
@@ -310,15 +316,18 @@ export const useGlobalRecording = () => {
       };
 
       recorder.onstop = async () => {
+        // Garantir tipo MIME correto
         const blob = new Blob(chunks, { type: 'audio/webm' });
+        console.log('🎵 Blob de áudio criado:', blob.size, 'bytes', 'Tipo:', blob.type);
         
-        // Salvar gravação no banco de dados
+        // Salvar gravação no banco de dados com o blob
         if ((window as any).createRecordingMutation) {
           (window as any).createRecordingMutation.mutate({
-            type: globalRecordingState.recordingType,
+            type: globalRecordingState.recordingType || 'audio',
             device_id: (window as any).currentDeviceId || 'default',
             duration: globalRecordingState.recordingTimeLimit * 60,
-            size: Math.round(blob.size / 1024 / 1024),
+            size: blob.size, // Tamanho em bytes
+            blob: blob, // Passar o blob para upload
           });
         }
 

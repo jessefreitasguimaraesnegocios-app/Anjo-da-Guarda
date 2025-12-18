@@ -106,13 +106,29 @@ export const useRecordings = () => {
 
       // Se há um blob, tentar fazer upload para o Supabase Storage DEPOIS
       if (recordingData.blob) {
-        console.log('📤 Tentando upload do arquivo:', filePath, 'Tamanho:', recordingData.blob.size, 'bytes');
+        console.log('📤 Tentando upload do arquivo:', filePath, 'Tamanho:', recordingData.blob.size, 'bytes', 'Tipo original:', recordingData.blob.type);
+        
+        // Determinar contentType correto baseado no tipo de gravação (OBRIGATÓRIO)
+        let contentType: string;
+        if (recordingData.type === 'video' || recordingData.type === 'panic') {
+          contentType = 'video/webm';
+        } else if (recordingData.type === 'audio') {
+          contentType = 'audio/webm';
+        } else if (recordingData.type === 'location') {
+          contentType = 'application/json';
+        } else {
+          contentType = recordingData.blob.type || 'application/octet-stream';
+        }
+
+        // SEMPRE recriar o blob com o tipo MIME correto para garantir
+        const blobToUpload = new Blob([recordingData.blob], { type: contentType });
+        console.log('✅ Blob recriado com tipo MIME correto:', contentType, 'Tamanho:', blobToUpload.size, 'bytes');
         
         try {
           const { error: uploadError } = await supabase.storage
             .from('recordings')
-            .upload(filePath, recordingData.blob, {
-              contentType: recordingData.blob.type,
+            .upload(filePath, blobToUpload, {
+              contentType: contentType, // OBRIGATÓRIO: sempre especificar explicitamente
               upsert: true // Permitir sobrescrever
             });
 
@@ -120,11 +136,35 @@ export const useRecordings = () => {
             console.error('❌ Erro ao fazer upload:', uploadError);
             // Não falhar - gravação já foi salva no banco
           } else {
-            console.log('✅ Upload concluído com sucesso:', filePath);
+            console.log('✅ Upload concluído com sucesso:', filePath, 'ContentType:', contentType);
           }
         } catch (uploadError) {
           console.error('❌ Erro de rede no upload:', uploadError);
           // Não falhar - gravação já foi salva no banco
+        }
+      } else if (recordingData.type === 'location' && recordingData.location_data) {
+        // Para localização, criar blob JSON se não foi fornecido
+        console.log('📤 Criando blob JSON para localização');
+        const locationBlob = new Blob(
+          [JSON.stringify(recordingData.location_data, null, 2)],
+          { type: 'application/json' }
+        );
+        
+        try {
+          const { error: uploadError } = await supabase.storage
+            .from('recordings')
+            .upload(filePath, locationBlob, {
+              contentType: 'application/json',
+              upsert: true
+            });
+
+          if (uploadError) {
+            console.error('❌ Erro ao fazer upload de localização:', uploadError);
+          } else {
+            console.log('✅ Upload de localização concluído:', filePath);
+          }
+        } catch (uploadError) {
+          console.error('❌ Erro de rede no upload de localização:', uploadError);
         }
       } else {
         console.log('⚠️ Nenhum blob fornecido para upload');
