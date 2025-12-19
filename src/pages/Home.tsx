@@ -502,15 +502,65 @@ export default function Home() {
   // Iniciar gravação de áudio
   const startAudioRecording = async () => {
     try {
+      // Verificar se getUserMedia está disponível
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('getUserMedia não está disponível neste navegador');
+      }
+
+      // Verificar se MediaRecorder está disponível
+      if (!window.MediaRecorder) {
+        throw new Error('MediaRecorder não está disponível neste navegador');
+      }
+
+      // Tentar obter stream de áudio
       const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: { 
           echoCancellation: true,
           noiseSuppression: true 
         } 
+      }).catch((error) => {
+        console.error('Erro ao obter permissão de áudio:', error);
+        let errorMessage = 'Erro ao acessar o microfone';
+        
+        if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+          errorMessage = 'Permissão de microfone negada. Por favor, permita o acesso ao microfone nas configurações do navegador.';
+        } else if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
+          errorMessage = 'Nenhum microfone encontrado. Verifique se há um microfone conectado.';
+        } else if (error.name === 'NotReadableError' || error.name === 'TrackStartError') {
+          errorMessage = 'O microfone está sendo usado por outro aplicativo. Feche outros aplicativos que possam estar usando o microfone.';
+        }
+        
+        throw new Error(errorMessage);
       });
 
+      // Verificar se o stream tem tracks de áudio
+      const audioTracks = stream.getAudioTracks();
+      if (audioTracks.length === 0) {
+        stream.getTracks().forEach(track => track.stop());
+        throw new Error('Nenhuma track de áudio encontrada no stream');
+      }
+
+      // Determinar o melhor MIME type suportado
+      let mimeType = 'audio/webm';
+      const supportedTypes = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/ogg;codecs=opus',
+        'audio/mp4',
+        'audio/wav'
+      ];
+
+      for (const type of supportedTypes) {
+        if (MediaRecorder.isTypeSupported(type)) {
+          mimeType = type;
+          break;
+        }
+      }
+
+      console.log('🎤 Iniciando gravação de áudio com MIME type:', mimeType);
+
       const recorder = new MediaRecorder(stream, {
-        mimeType: 'audio/webm;codecs=opus'
+        mimeType: mimeType
       });
 
       audioChunksRef.current = [];
@@ -520,15 +570,32 @@ export default function Home() {
         }
       };
 
+      recorder.onerror = (event) => {
+        console.error('Erro no MediaRecorder:', event);
+        if ((window as any).showNotification) {
+          (window as any).showNotification('error', 'Erro durante a gravação de áudio');
+        }
+      };
+
       recorder.onstop = async () => {
-        const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        // Garantir tipo MIME correto no blob
+        const blob = new Blob(audioChunksRef.current, { type: mimeType });
+        console.log('🎵 Blob de áudio criado:', blob.size, 'bytes', 'Tipo:', blob.type);
+        
+        if (blob.size === 0) {
+          if ((window as any).showNotification) {
+            (window as any).showNotification('error', 'Erro: Arquivo de áudio vazio');
+          }
+          stream.getTracks().forEach(track => track.stop());
+          return;
+        }
         
         // Salvar gravação no banco de dados
         createRecordingMutation.mutate({
           type: 'audio',
           device_id: devices[0]?.id || 'default',
           duration: recordingDuration,
-          size: Math.round(blob.size / 1024 / 1024), // MB
+          size: blob.size, // Tamanho em bytes
           blob: blob, // Passar o blob real
         });
         
@@ -540,7 +607,7 @@ export default function Home() {
         }
       };
 
-      recorder.start();
+      recorder.start(1000); // Coletar dados a cada 1 segundo
       
       setRecordingState(prev => ({
         ...prev,
@@ -550,11 +617,25 @@ export default function Home() {
         recordingType: 'audio'
       }));
 
+      console.log('✅ Gravação de áudio iniciada com sucesso');
       return recorder;
-    } catch (error) {
+    } catch (error: any) {
+      console.error('❌ Erro ao iniciar gravação de áudio:', error);
+      const errorMessage = error.message || 'Erro ao iniciar gravação de áudio';
+      
       if ((window as any).showNotification) {
-        (window as any).showNotification('error', 'Erro ao iniciar gravação de áudio');
+        (window as any).showNotification('error', errorMessage);
       }
+      
+      // Limpar estado em caso de erro
+      setRecordingState(prev => ({
+        ...prev,
+        audioRecorder: null,
+        audioStream: null,
+        isRecording: false,
+        recordingType: null
+      }));
+      
       throw error;
     }
   };
